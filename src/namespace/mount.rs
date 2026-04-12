@@ -20,7 +20,7 @@ use std::path::Path;
 /// 4. Performs pivot_root to change the root filesystem
 /// 5. Unmounts the old root
 pub fn setup_mount_namespace(new_root: &Path) -> Result<()> {
-    tracing::debug!("Setting up mount namespace with root: {:?}", new_root);
+    tracing::debug!(new_root = ?new_root, "Setting up mount namespace");
 
     // Make the mount namespace private (no propagation)
     mount(
@@ -69,7 +69,9 @@ pub fn setup_mount_namespace(new_root: &Path) -> Result<()> {
         .map_err(|e| ContainerError::Mount(format!("Failed to unmount old root: {}", e)))?;
 
     // Remove the old root directory
-    fs::remove_dir("/.pivot_root").ok(); // Ignore errors
+    if let Err(e) = fs::remove_dir("/.pivot_root") {
+        tracing::warn!(error = %e, "Failed to remove /.pivot_root directory");
+    }
 
     Ok(())
 }
@@ -88,7 +90,7 @@ fn mount_proc() -> Result<()> {
     )
     .map_err(|e| ContainerError::Mount(format!("Failed to mount /proc: {}", e)))?;
 
-    tracing::debug!("Mounted /proc");
+    tracing::debug!(mountpoint = "/proc", "Mounted proc filesystem");
     Ok(())
 }
 
@@ -106,7 +108,7 @@ fn mount_sysfs() -> Result<()> {
     )
     .map_err(|e| ContainerError::Mount(format!("Failed to mount /sys: {}", e)))?;
 
-    tracing::debug!("Mounted /sys");
+    tracing::debug!(mountpoint = "/sys", "Mounted sysfs");
     Ok(())
 }
 
@@ -130,27 +132,29 @@ fn setup_dev() -> Result<()> {
 
     // Create /dev/pts for pseudoterminals
     fs::create_dir_all("/dev/pts").ok();
-    mount(
+    if let Err(e) = mount(
         Some("devpts"),
         "/dev/pts",
         Some("devpts"),
         MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC,
         Some("newinstance,ptmxmode=0666,mode=0620"),
-    )
-    .ok(); // Ignore errors if devpts is not available
+    ) {
+        tracing::warn!(error = %e, "Failed to mount /dev/pts (devpts may not be available)");
+    }
 
     // Create /dev/shm for shared memory
     fs::create_dir_all("/dev/shm").ok();
-    mount(
+    if let Err(e) = mount(
         Some("tmpfs"),
         "/dev/shm",
         Some("tmpfs"),
         MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC | MsFlags::MS_NODEV,
         Some("mode=1777,size=65536k"),
-    )
-    .ok();
+    ) {
+        tracing::warn!(error = %e, "Failed to mount /dev/shm");
+    }
 
-    tracing::debug!("Set up /dev");
+    tracing::debug!(mountpoint = "/dev", "Set up device filesystem");
     Ok(())
 }
 
@@ -181,16 +185,26 @@ fn create_dev_nodes() -> Result<()> {
         })?;
     }
 
-    // Create symlinks
-    symlink("/proc/self/fd", "/dev/fd").ok();
-    symlink("/proc/self/fd/0", "/dev/stdin").ok();
-    symlink("/proc/self/fd/1", "/dev/stdout").ok();
-    symlink("/proc/self/fd/2", "/dev/stderr").ok();
+    // Create symlinks -- EEXIST is expected if they already exist
+    for (target, linkpath) in [
+        ("/proc/self/fd", "/dev/fd"),
+        ("/proc/self/fd/0", "/dev/stdin"),
+        ("/proc/self/fd/1", "/dev/stdout"),
+        ("/proc/self/fd/2", "/dev/stderr"),
+    ] {
+        if let Err(e) = symlink(target, linkpath) {
+            if e.kind() != std::io::ErrorKind::AlreadyExists {
+                tracing::warn!(link = linkpath, error = %e, "Failed to create dev symlink");
+            }
+        }
+    }
 
     // Create /dev/console (needed for some applications)
     let console_dev = makedev(5, 1);
     fs::remove_file("/dev/console").ok();
-    mknod(Path::new("/dev/console"), SFlag::S_IFCHR, mode, console_dev).ok();
+    if let Err(e) = mknod(Path::new("/dev/console"), SFlag::S_IFCHR, mode, console_dev) {
+        tracing::warn!(error = %e, "Failed to create /dev/console");
+    }
 
     Ok(())
 }

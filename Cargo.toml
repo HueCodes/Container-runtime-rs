@@ -20,6 +20,7 @@ clap = { version = "4", features = ["derive"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 
 # Async runtime (for registry pulls)
 tokio = { version = "1", features = ["full"] }
@@ -52,10 +53,14 @@ thiserror = "1"
 # UUID for container IDs
 uuid = { version = "1", features = ["v4"] }
 
-# Linux-only networking dependencies
+# Directories for config/data paths
+dirs = "5"
+
+# Linux-only dependencies
 [target.'cfg(target_os = "linux")'.dependencies]
 netlink-packet-route = "0.19"
 rtnetlink = "0.14"
+caps = "0.5"
 
 [dev-dependencies]
 tempfile = "3"
