@@ -153,7 +153,7 @@ impl RuntimeManager {
 
         let annotations = spec.annotations().clone().unwrap_or_default();
 
-        let now = chrono_now();
+        let now = now_rfc3339();
 
         let mut status = ContainerStatus {
             id: id.to_string(),
@@ -481,10 +481,11 @@ fn linux_stop_process(pid: u32, signal: i32, timeout: Duration) -> Result<()> {
     }
 }
 
-/// Returns the current time as an RFC 3339 string.
+/// Returns the current UTC time as an RFC 3339 timestamp.
 ///
-/// Uses a simple implementation that does not require the `chrono` crate.
-fn chrono_now() -> String {
+/// Implemented manually so the runtime does not pull in `chrono` for one
+/// timestamp string. See `days_to_ymd` for the date conversion algorithm.
+fn now_rfc3339() -> String {
     use std::time::SystemTime;
     let duration = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -788,8 +789,8 @@ mod tests {
     }
 
     #[test]
-    fn test_chrono_now_format() {
-        let ts = chrono_now();
+    fn test_now_rfc3339_format() {
+        let ts = now_rfc3339();
         // Should match YYYY-MM-DDTHH:MM:SSZ pattern.
         assert!(ts.ends_with('Z'));
         assert_eq!(ts.len(), 20);

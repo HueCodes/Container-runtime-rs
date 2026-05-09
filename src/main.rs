@@ -38,26 +38,6 @@ enum Commands {
         /// Root filesystem path (uses temporary if not specified)
         #[arg(short, long)]
         rootfs: Option<String>,
-
-        /// Memory limit (e.g., 512m, 1g)
-        #[arg(long)]
-        memory: Option<String>,
-
-        /// CPU quota in microseconds per 100ms period
-        #[arg(long)]
-        cpu_quota: Option<u64>,
-
-        /// PID limit
-        #[arg(long)]
-        pids_limit: Option<u64>,
-
-        /// Enable networking
-        #[arg(long, default_value_t = false)]
-        net: bool,
-
-        /// Read-only root filesystem
-        #[arg(long, default_value_t = false)]
-        read_only: bool,
     },
 
     /// Create a container from an OCI bundle
@@ -80,10 +60,6 @@ enum Commands {
     Stop {
         /// Container ID
         container_id: String,
-
-        /// Signal to send (default: SIGTERM)
-        #[arg(short, long, default_value = "SIGTERM")]
-        signal: String,
 
         /// Timeout in seconds before SIGKILL
         #[arg(short, long, default_value_t = 10)]
@@ -167,11 +143,6 @@ fn main() -> Result<()> {
             command,
             hostname,
             rootfs,
-            memory: _,
-            cpu_quota: _,
-            pids_limit: _,
-            net: _,
-            read_only: _,
         } => {
             tracing::info!(
                 command = ?command,
@@ -215,7 +186,6 @@ fn main() -> Result<()> {
 
         Commands::Stop {
             container_id,
-            signal: _,
             timeout,
         } => {
             tracing::info!(container_id = %container_id, "Stopping container");

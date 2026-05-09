@@ -4,30 +4,26 @@ use crate::container::builder::ContainerConfig;
 use crate::error::{ContainerError, Result};
 
 #[cfg(target_os = "linux")]
-use std::ffi::CString;
+use std::{
+    ffi::CString,
+    fs,
+    os::unix::fs as unix_fs,
+    path::{Path, PathBuf},
+};
+
 #[cfg(target_os = "linux")]
-use std::fs;
-#[cfg(target_os = "linux")]
-use std::path::Path;
-#[cfg(target_os = "linux")]
-use std::path::PathBuf;
+use nix::{
+    mount::{umount2, MntFlags},
+    sched::{clone, CloneFlags},
+    sys::{
+        signal::Signal,
+        wait::{waitpid, WaitStatus},
+    },
+    unistd::{chdir, execvp, sethostname, Pid},
+};
 
 #[cfg(target_os = "linux")]
 use crate::namespace;
-
-#[cfg(target_os = "linux")]
-use nix::mount::{umount2, MntFlags};
-#[cfg(target_os = "linux")]
-use nix::sched::{clone, CloneFlags};
-#[cfg(target_os = "linux")]
-use nix::sys::signal::Signal;
-#[cfg(target_os = "linux")]
-use nix::sys::wait::{waitpid, WaitStatus};
-#[cfg(target_os = "linux")]
-use nix::unistd::{chdir, execvp, sethostname, Pid};
-
-#[cfg(target_os = "linux")]
-use std::os::unix::fs as unix_fs;
 
 #[cfg(target_os = "linux")]
 const STACK_SIZE: usize = 1024 * 1024; // 1MB stack for child
@@ -37,15 +33,18 @@ pub struct Container {
     pub config: ContainerConfig,
     #[cfg(target_os = "linux")]
     rootfs_path: PathBuf,
+    /// True when this Container created its own temporary rootfs and is
+    /// responsible for tearing it down on exit. False when the user provided
+    /// `--rootfs` and owns the directory.
     #[cfg(target_os = "linux")]
-    cleanup_rootfs: bool,
+    owns_rootfs: bool,
 }
 
 impl Container {
     /// Create a new container with the given configuration.
     #[cfg(target_os = "linux")]
     pub fn new(config: ContainerConfig) -> Self {
-        let (rootfs_path, cleanup_rootfs) = if let Some(ref path) = config.rootfs {
+        let (rootfs_path, owns_rootfs) = if let Some(ref path) = config.rootfs {
             (path.clone(), false)
         } else {
             // Create temporary rootfs using a restrictive temp directory
@@ -56,7 +55,7 @@ impl Container {
         Self {
             config,
             rootfs_path,
-            cleanup_rootfs,
+            owns_rootfs,
         }
     }
 
@@ -131,7 +130,7 @@ impl Container {
         );
 
         // Cleanup
-        if self.cleanup_rootfs {
+        if self.owns_rootfs {
             self.cleanup_rootfs()?;
         }
 
@@ -149,7 +148,7 @@ impl Container {
     /// Prepare the root filesystem for the container.
     #[cfg(target_os = "linux")]
     fn prepare_rootfs(&self) -> Result<()> {
-        if self.cleanup_rootfs {
+        if self.owns_rootfs {
             // Create a minimal rootfs structure
             create_minimal_rootfs(&self.rootfs_path)?;
         }
@@ -255,13 +254,7 @@ pub fn init_container(command: &[String], hostname: &str, rootfs: &str) -> Resul
         hostname: hostname.to_string(),
         command: command.to_vec(),
         rootfs: Some(PathBuf::from(rootfs)),
-        env: vec![
-            (
-                "PATH".to_string(),
-                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
-            ),
-            ("TERM".to_string(), "xterm".to_string()),
-        ],
+        ..ContainerConfig::default()
     };
 
     container_init(&config, Path::new(rootfs))

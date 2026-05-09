@@ -180,8 +180,6 @@ mod syscall_nr {
 /// Only available on Linux. The non-Linux stub returns an error.
 #[cfg(target_os = "linux")]
 pub fn apply_seccomp_filter() -> Result<()> {
-    use std::mem;
-
     // BPF instruction helpers matching the kernel's sock_filter layout.
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -331,11 +329,6 @@ pub fn apply_seccomp_filter() -> Result<()> {
             std::io::Error::last_os_error()
         )));
     }
-
-    // Prevent the optimizer from dropping `filter` before prctl reads it.
-    drop(filter);
-    // Suppress unused variable warning; `prog` must live until after prctl.
-    let _ = mem::size_of_val(&prog);
 
     tracing::info!("seccomp BPF filter installed");
     Ok(())

@@ -30,9 +30,6 @@ sudo crate run /bin/sh
 # Run with a specific rootfs and hostname
 sudo crate run -r /path/to/rootfs -H myhost /bin/sh
 
-# Run with resource limits
-sudo crate run --memory 512m --pids-limit 100 /bin/echo hello
-
 # Pull an image from Docker Hub
 sudo crate pull alpine:latest
 
@@ -44,6 +41,11 @@ sudo crate stop mycontainer
 sudo crate delete mycontainer
 sudo crate list
 ```
+
+Cgroup, networking, and security policies are exposed as library APIs
+(`crate_runtime::cgroup`, `::network`, `::security`) and via the OCI
+`config.json` for `create` / `start`; the `run` subcommand is intentionally
+minimal. See the module docs for usage.
 
 ## Architecture
 
