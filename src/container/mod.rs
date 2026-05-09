@@ -8,5 +8,8 @@
 mod builder;
 mod process;
 
-pub use builder::ContainerBuilder;
+pub use builder::{ContainerBuilder, ContainerConfig};
 pub use process::{init_container, Container};
+
+#[cfg(target_os = "linux")]
+pub use process::spawn_container_process;

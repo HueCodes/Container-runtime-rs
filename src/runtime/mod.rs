@@ -183,22 +183,42 @@ impl RuntimeManager {
 
     /// Start a created container.
     ///
-    /// Transitions state from `Created` to `Running`. On Linux, this would
-    /// exec the container process; here we record a placeholder PID.
+    /// Transitions state from `Created` to `Running`. On Linux, builds a
+    /// `ContainerConfig` from the bundle's OCI spec, clones into new
+    /// namespaces, and records the child's real PID. The child execs the
+    /// user's command and never returns; this method returns to its caller
+    /// as soon as the child exists.
+    ///
+    /// On non-Linux platforms (where `clone(CLONE_NEW*)` is unavailable),
+    /// only the state-machine transition runs; the recorded PID is the
+    /// runtime's own PID as a placeholder. Tests that exercise the lifecycle
+    /// on macOS rely on this path.
+    ///
     /// Runs poststart hooks if present.
     #[instrument(skip(self), fields(container_id = %id))]
     pub fn start(&self, id: &str) -> Result<()> {
         let mut status = self.load_status(id)?;
 
+        let spec = load_oci_spec(&status.bundle)?;
+
         self.transition(&mut status, ContainerState::Running)?;
 
-        // On a real runtime we would fork/exec the container process here.
-        // Record a placeholder PID for bookkeeping.
-        status.pid = Some(std::process::id());
+        #[cfg(target_os = "linux")]
+        {
+            let (config, rootfs) = container_config_from_spec(id, &status.bundle, &spec)?;
+            let pid = crate::container::spawn_container_process(config, rootfs)?;
+            status.pid = Some(pid.as_raw() as u32);
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            // No real fork/exec available; record runtime PID as placeholder.
+            status.pid = Some(std::process::id());
+        }
+
         self.save_status(&status)?;
 
         // Run poststart hooks.
-        let spec = load_oci_spec(&status.bundle)?;
         if let Some(hooks) = spec.hooks().as_ref() {
             if let Some(poststart) = hooks.poststart().as_ref() {
                 info!(id = %id, count = poststart.len(), "running poststart hooks");
@@ -314,6 +334,65 @@ impl RuntimeManager {
         debug!(count = result.len(), "listed containers");
         Ok(result)
     }
+}
+
+/// Translate an OCI `Spec` into the `ContainerConfig` consumed by
+/// `spawn_container_process`, plus the absolute rootfs path.
+///
+/// The OCI spec's `root.path` is interpreted relative to the bundle
+/// directory unless it is already absolute (per the runtime spec).
+#[cfg(target_os = "linux")]
+fn container_config_from_spec(
+    id: &str,
+    bundle: &Path,
+    spec: &oci_spec::runtime::Spec,
+) -> Result<(crate::container::ContainerConfig, PathBuf)> {
+    let process = spec.process().as_ref().ok_or_else(|| {
+        ContainerError::Runtime("OCI spec is missing the 'process' section".into())
+    })?;
+
+    let command = process
+        .args()
+        .as_ref()
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| ContainerError::Runtime("OCI process.args is empty".into()))?
+        .clone();
+
+    let env: Vec<(String, String)> = process
+        .env()
+        .as_ref()
+        .map(|vars| {
+            vars.iter()
+                .filter_map(|v| {
+                    v.split_once('=')
+                        .map(|(k, val)| (k.to_string(), val.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let hostname = spec.hostname().as_deref().unwrap_or(id).to_string();
+
+    let root = spec
+        .root()
+        .as_ref()
+        .ok_or_else(|| ContainerError::Runtime("OCI spec is missing the 'root' section".into()))?;
+
+    let rootfs = if root.path().is_absolute() {
+        root.path().clone()
+    } else {
+        bundle.join(root.path())
+    };
+
+    let config = crate::container::ContainerConfig {
+        id: id.to_string(),
+        hostname,
+        command,
+        rootfs: Some(rootfs.clone()),
+        env,
+    };
+
+    Ok((config, rootfs))
 }
 
 /// Load and parse an OCI `config.json` from a bundle directory.

@@ -246,6 +246,53 @@ fn container_init(config: &ContainerConfig, rootfs: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Spawn a container process: clone into new namespaces, run the
+/// initialization sequence in the child, and return the child PID
+/// to the parent without waiting.
+///
+/// Used by `RuntimeManager::start` for the OCI lifecycle, where `start`
+/// must launch the container and return immediately (otherwise the
+/// caller would block until the container exits).
+///
+/// # Stack lifetime — important
+///
+/// `clone(2)` requires the caller to provide a stack for the new task.
+/// Unlike `fork`, the kernel does not copy this memory; the cloned child
+/// uses the parent's allocation directly until it `execvp`s, at which
+/// point the kernel replaces the child's address space.
+///
+/// `Container::run` allocates the stack on the parent's stack and is
+/// safe because it `wait`s on the child before returning. This function
+/// must return *before* the child execs, so we cannot use a stack-local
+/// allocation. We deliberately leak the heap-allocated stack with
+/// `Box::leak` (~1 MB per `start()` call). Production runtimes avoid the
+/// leak by running an intermediate helper process (`runc init`) whose own
+/// stack is reclaimed by the kernel when it execs the container command.
+#[cfg(target_os = "linux")]
+pub fn spawn_container_process(config: ContainerConfig, rootfs: PathBuf) -> Result<Pid> {
+    let clone_flags = CloneFlags::CLONE_NEWPID
+        | CloneFlags::CLONE_NEWNS
+        | CloneFlags::CLONE_NEWUTS
+        | CloneFlags::CLONE_NEWIPC;
+
+    // Heap-allocated, intentionally leaked. See doc comment.
+    let stack: &mut [u8] = Box::leak(vec![0u8; STACK_SIZE].into_boxed_slice());
+
+    let callback = Box::new(move || match container_init(&config, &rootfs) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("Container init error: {}", e);
+            1
+        }
+    });
+
+    let pid = unsafe { clone(callback, stack, clone_flags, Some(Signal::SIGCHLD as i32)) }
+        .map_err(|e| ContainerError::Process(format!("Failed to clone: {}", e)))?;
+
+    tracing::info!(pid = pid.as_raw(), "spawned container process");
+    Ok(pid)
+}
+
 /// Public function called from main for the init subcommand.
 #[cfg(target_os = "linux")]
 pub fn init_container(command: &[String], hostname: &str, rootfs: &str) -> Result<()> {
